@@ -6,10 +6,10 @@ Built because meeting notetakers that capture system audio on macOS and Windows 
 
 ## How it works
 
-- `meeting start [name]` resolves your current default source (microphone) and the default sink's monitor (what you hear) at record time, and records them as two separate 16 kHz mono WAVs into a spool directory. Recording is detached and survives closing the terminal. If you don't pass a name, it looks for a Google Calendar event live right now on your primary calendar (via the `gws` CLI — npm package `@googleworkspace/cli` — if installed and authenticated) and uses its title; otherwise it falls back to "meeting".
+- `meeting start [name]` resolves your current default source (microphone) and the default sink's monitor (what you hear) at record time, and records them as two separate 16 kHz mono WAVs into a spool directory. Recording is detached and survives closing the terminal. If you don't pass a name, it looks for a Google Calendar event live right now on your primary calendar (via the `gws` CLI — npm package `@googleworkspace/cli` — if installed and authenticated) and uses its title; otherwise it falls back to "meeting". While either track is recording, sleep and idle are inhibited via `systemd-inhibit` (scoped to the recorder process itself, released automatically the moment it stops; skipped with no error if `systemd-inhibit` isn't available).
 - `meeting toggle` starts a recording if idle, or stops the current one if recording. Meant to be bound to a keyboard shortcut (see Keyboard shortcut below).
 - `meeting watch` runs in the foreground and sends a desktop notification when it looks like a meeting just started, without ever recording on its own (see Meeting-start notifications below).
-- `meeting stop` ends both recorders and runs the pipeline: each track is transcribed separately with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CPU, int8), so the microphone track becomes "Me" and the system track becomes "Others" — two-speaker attribution without diarization, since conferencing apps never play your own voice back. The merged, timestamped transcript is summarized into structured notes by headless `claude -p` (Claude Code subscription; no API key). Everything is archived as:
+- `meeting stop` ends both recorders and runs the pipeline: each track is transcribed separately with [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CPU, int8), so the microphone track becomes "Me" and the system track becomes "Others" — two-speaker attribution without diarization, since conferencing apps never play your own voice back. The merged, timestamped transcript is summarized into structured notes by headless `claude -p` (Claude Code subscription; no API key), in the transcript's dominant language unless `[summary] language` overrides it. Everything is archived as:
 
 ```
 archive/2026/07/25/1030-roadmap-planning-a1b2c3d4/
@@ -20,7 +20,11 @@ archive/2026/07/25/1030-roadmap-planning-a1b2c3d4/
   system.wav
 ```
 
-An optional mirror copies the three text files (never audio) to a second folder, e.g. a cloud-synced drive.
+Set `[retention] delete_audio_after = true` to drop `mic.wav`/`system.wav` once transcription is done instead of archiving them — the archive then keeps only the three text files. `meeting cleanup` additionally deletes `transcript.md` (never `meeting.md`, never audio) from archived meetings older than `[retention] transcript_days` (0 = disabled); run it by hand or from cron.
+
+If transcription or note-generation fails (auth expired, network blip, rate limit, whatever), the recording is left exactly as-is in the spool directory — nothing is deleted, nothing is archived — and you get a desktop notification plus the exact command to re-run processing by hand once the underlying problem is fixed: `python3 pipeline/process.py <spool-dir>`.
+
+An optional mirror copies the three text files (never audio) to a second folder, e.g. a cloud-synced drive. A `[hooks] on_archive_change` command, if set, runs (best-effort, never blocking the archive) after each meeting is archived — see `config.example.toml` for the environment variables it receives.
 
 The spool-then-archive lifecycle and the data model are borrowed from Andre Foeken's meeting-notes (see Credits).
 
@@ -31,6 +35,7 @@ The spool-then-archive lifecycle and the data model are borrowed from Andre Foek
 - `ffmpeg` (only for the audio checks described below), `notify-send` (optional, desktop notifications)
 - [Claude Code](https://claude.com/claude-code) CLI, authenticated, for the notes step
 - `gws` (optional — npm package `@googleworkspace/cli`, authenticated), for automatic meeting titling from your calendar. Without it, `meeting start` with no name just uses "meeting".
+- `systemd-inhibit` (optional — part of systemd, present on most desktop distros), to hold off sleep/idle while recording. Without it, recording still works, just without the wake-lock.
 
 Transcription is CPU-friendly: measured on an i7-8550U ultrabook (8 threads, no usable GPU), the `small` model at int8 does one minute of audio in about 15.5 seconds (RTF 0.26).
 
@@ -44,7 +49,7 @@ python3 -m venv .venv
 ln -s "$PWD/bin/meeting" ~/.local/bin/meeting
 ```
 
-Optional configuration (paths, whisper model size, notes persona):
+Optional configuration (paths, whisper model size, notes persona/language, mic override, retention, hooks — see `config.example.toml` for the full list):
 
 ```bash
 mkdir -p ~/.config/ddv-meeting-notes
@@ -95,6 +100,17 @@ systemctl --user enable --now ddv-meeting-watch.service
 ```
 
 `systemctl --user status ddv-meeting-watch.service` to check it, `systemctl --user stop ddv-meeting-watch.service` to stop it (this also stops its `pactl subscribe` child — systemd kills the whole service cgroup).
+
+`meeting watch`'s pattern currently recognizes Chrome/Chromium, Firefox and Teams; broadening it to other conferencing apps needs their real PipeWire `application.name`/`application.process.binary` values captured during an actual call (see LESSONS.md), not assumed strings.
+
+## Retention and cleanup
+
+- `[retention] delete_audio_after = true` drops the WAVs right after transcription instead of archiving them.
+- `[retention] transcript_days = N` plus `meeting cleanup` deletes `transcript.md` (never `meeting.md`, never audio) from archived meetings older than N days. Not run automatically — call it by hand, or from cron:
+
+```
+0 4 * * * /path/to/ddv-meeting-notes/bin/meeting cleanup
+```
 
 ## Credits
 

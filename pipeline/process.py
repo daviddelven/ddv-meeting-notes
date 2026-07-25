@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -21,7 +22,7 @@ import config
 
 SUMMARY_PROMPT_TEMPLATE = """{context} Below (stdin) is the transcript of a meeting with two voices: "Me" (the user, captured by the microphone) and "Others" (the remote participants, captured from the system audio output). Speaker labels in the transcript may appear localized.
 
-Write structured meeting notes in Markdown with exactly these sections, translating BOTH the section headings and the content into the dominant language of the transcript:
+Write structured meeting notes in Markdown with exactly these sections, translating BOTH the section headings and the content into {language}:
 
 # [short descriptive meeting title]
 ## Summary
@@ -79,9 +80,9 @@ def build_transcript(meta: dict, segments: list[Segment], duration: float) -> st
     return "\n".join(lines)
 
 
-def summarize(transcript: str, context: str) -> str:
+def summarize(transcript: str, context: str, language: str) -> str:
     result = subprocess.run(
-        ["claude", "-p", SUMMARY_PROMPT_TEMPLATE.format(context=context)],
+        ["claude", "-p", SUMMARY_PROMPT_TEMPLATE.format(context=context, language=language)],
         input=transcript,
         capture_output=True,
         text=True,
@@ -92,32 +93,64 @@ def summarize(transcript: str, context: str) -> str:
     return result.stdout.strip() + "\n"
 
 
+def notify_processing_failed(spool: Path, exc: Exception) -> None:
+    rerun_cmd = f"python3 {Path(__file__).resolve()} {spool}"
+    print(f"Processing failed: {exc}", file=sys.stderr)
+    print(f"The recording is untouched in: {spool}", file=sys.stderr)
+    print(f"Re-run manually once fixed: {rerun_cmd}", file=sys.stderr)
+    subprocess.run(
+        [
+            "notify-send",
+            "-u",
+            "critical",
+            "Meeting notes: processing failed",
+            f"Recording kept in {spool}. Re-run: {rerun_cmd}",
+        ],
+        check=False,
+    )
+
+
 def main() -> None:
     cfg = config.load()
     spool = Path(sys.argv[1]).resolve()
     meta = json.loads((spool / "meeting.json").read_text())
+    language = cfg["summary_language"] or "the dominant language of the transcript"
 
-    duration = wav_duration(spool / "mic.wav")
-    meta["duration_seconds"] = round(duration, 1)
-    meta["processed_at"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    # Everything here touches an external engine (local Whisper model load/
+    # inference, the `claude -p` subprocess) that can fail for reasons outside
+    # this script's control (auth expired, network blip, rate limit, OOM). On
+    # failure the spool directory is left exactly as `meeting stop` produced
+    # it (nothing archived, nothing deleted) so the printed command re-runs
+    # processing from scratch without losing the recording.
+    try:
+        duration = wav_duration(spool / "mic.wav")
+        meta["duration_seconds"] = round(duration, 1)
+        meta["processed_at"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
-    print("Transcribing both tracks (local Whisper, CPU)...")
-    from faster_whisper import WhisperModel
+        print("Transcribing both tracks (local Whisper, CPU)...")
+        from faster_whisper import WhisperModel
 
-    model = WhisperModel(cfg["model"], device="cpu", compute_type="int8")
-    segments = transcribe(model, spool / "mic.wav", "Me") + transcribe(
-        model, spool / "system.wav", "Others"
-    )
-    transcript = build_transcript(meta, segments, duration)
-    (spool / "transcript.md").write_text(transcript)
+        model = WhisperModel(cfg["model"], device="cpu", compute_type="int8")
+        segments = transcribe(model, spool / "mic.wav", "Me") + transcribe(
+            model, spool / "system.wav", "Others"
+        )
+        transcript = build_transcript(meta, segments, duration)
+        (spool / "transcript.md").write_text(transcript)
 
-    print("Generating structured notes (claude -p)...")
-    if segments:
-        notes = summarize(transcript, cfg["summary_context"])
-    else:
-        notes = f"# {meta['name']}\n\nNo speech detected in the recording.\n"
-    (spool / "meeting.md").write_text(notes)
-    (spool / "meeting.json").write_text(json.dumps(meta, indent=2) + "\n")
+        if cfg["delete_audio_after"]:
+            (spool / "mic.wav").unlink(missing_ok=True)
+            (spool / "system.wav").unlink(missing_ok=True)
+
+        print("Generating structured notes (claude -p)...")
+        if segments:
+            notes = summarize(transcript, cfg["summary_context"], language)
+        else:
+            notes = f"# {meta['name']}\n\nNo speech detected in the recording.\n"
+        (spool / "meeting.md").write_text(notes)
+        (spool / "meeting.json").write_text(json.dumps(meta, indent=2) + "\n")
+    except Exception as exc:  # noqa: BLE001 -- deliberately broad, see comment above
+        notify_processing_failed(spool, exc)
+        sys.exit(1)
 
     started = datetime.datetime.fromisoformat(meta["started_at"])
     # spool "20260725-1030-name-a1b2c3d4" -> archive "2026/07/25/1030-name-a1b2c3d4"
@@ -141,6 +174,23 @@ def main() -> None:
         ["notify-send", "Meeting notes", f"Notes ready: {dest / 'meeting.md'}"],
         check=False,
     )
+
+    # Best-effort: a broken or slow hook must never undo an already-successful
+    # archive, so this runs after archiving and never raises.
+    if cfg["on_archive_change"]:
+        hook_env = {
+            **os.environ,
+            "MEETING_ARCHIVE_DIR": str(dest),
+            "MEETING_NAME": meta["name"],
+            "MEETING_NOTES_PATH": str(dest / "meeting.md"),
+            "MEETING_TRANSCRIPT_PATH": str(dest / "transcript.md"),
+        }
+        try:
+            result = subprocess.run(cfg["on_archive_change"], shell=True, env=hook_env, timeout=120)
+            if result.returncode != 0:
+                print(f"Archive-change hook exited {result.returncode} (ignored)", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 -- best-effort by design
+            print(f"Archive-change hook failed (ignored): {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

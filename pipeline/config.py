@@ -30,16 +30,26 @@ def load() -> dict:
 
     paths = raw.get("paths", {})
     mirror = paths.get("mirror_root")
+    audio = raw.get("audio", {})
+    retention = raw.get("retention", {})
+    summary = raw.get("summary", {})
+    hooks = raw.get("hooks", {})
     return {
         "spool_root": _expand(paths.get("spool_root", "~/Recordings/meetings/spool")),
         "archive_root": _expand(paths.get("archive_root", "~/Recordings/meetings/archive")),
         "mirror_root": _expand(mirror) if mirror else None,
         "model": raw.get("transcription", {}).get("model", "small"),
-        "summary_context": raw.get("summary", {}).get(
-            "context", "You are a meeting-notes assistant."
-        ),
+        "summary_context": summary.get("context", "You are a meeting-notes assistant."),
+        "summary_language": summary.get("language") or None,
+        "mic_source": audio.get("mic_source") or None,
+        "delete_audio_after": bool(retention.get("delete_audio_after", False)),
+        "transcript_retention_days": int(retention.get("transcript_days", 0) or 0),
+        "on_archive_change": hooks.get("on_archive_change") or None,
     }
 
 
 if __name__ == "__main__":
-    print(load()[sys.argv[1]])
+    # Print "" rather than the literal string "None" for unset keys, so shell
+    # callers can test with a plain [[ -z "$(...)" ]] instead of string-matching.
+    value = load()[sys.argv[1]]
+    print("" if value is None else value)

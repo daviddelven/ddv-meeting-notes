@@ -12,6 +12,8 @@
 #   meeting status         show whether a recording is in progress
 #   meeting watch          foreground: notify when a likely meeting starts
 #                          (never auto-starts recording)
+#   meeting cleanup        delete transcript.md from archived meetings past
+#                          [retention] transcript_days (0 = disabled)
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
@@ -102,16 +104,27 @@ cmd_start() {
   local id
   id="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
   local dir="$SPOOL_ROOT/$(date +%Y%m%d-%H%M)-${name}-${id}"
-  mkdir -p "$dir"
 
+  # Resolve and validate devices BEFORE creating the spool directory: a
+  # rejected device (bad [audio] mic_source, no matching monitor) must exit
+  # cleanly with nothing left behind, not an empty orphaned spool dir.
   local mic monitor
-  mic="$(pactl get-default-source)"
+  mic="$("$PYTHON" "$REPO_DIR/pipeline/config.py" mic_source)"
+  if [[ -z "$mic" ]]; then
+    mic="$(pactl get-default-source)"
+  elif ! pactl list short sources | awk '{print $2}' | grep -qx "$mic"; then
+    echo "Configured [audio] mic_source '$mic' not found. Available sources:" >&2
+    pactl list short sources >&2
+    exit 1
+  fi
   monitor="$(pactl get-default-sink).monitor"
   if ! pactl list short sources | awk '{print $2}' | grep -qx "$monitor"; then
     echo "Monitor source '$monitor' not found. Available sources:" >&2
     pactl list short sources >&2
     exit 1
   fi
+
+  mkdir -p "$dir"
 
   "$PYTHON" - "$dir" "$name" "$mic" "$monitor" <<'EOF'
 import json, sys, datetime
@@ -126,13 +139,23 @@ with open(f"{d}/meeting.json", "w") as f:
     json.dump(meta, f, indent=2)
 EOF
 
+  # Hold sleep/idle off for as long as each recorder is alive: systemd-inhibit
+  # forks its argument as a child and releases the lock the moment that child
+  # exits, so wrapping parecord (rather than this script) ties the lock's
+  # lifetime exactly to the recording, with no separate release step needed.
+  # Degrades to no lock (not a hard failure) if systemd-inhibit is absent.
+  local -a inhibit_prefix=()
+  if command -v systemd-inhibit >/dev/null 2>&1; then
+    inhibit_prefix=(systemd-inhibit --what=sleep:idle --who="ddv-meeting-notes" --why="Recording meeting: $name")
+  fi
+
   # 16 kHz mono s16le: what Whisper wants, and 12x smaller than stereo 48k s32.
   # --client-name lets `meeting watch` recognize and ignore its own streams.
-  setsid parecord --client-name="${OWN_CLIENT_PREFIX}mic" \
+  setsid "${inhibit_prefix[@]}" parecord --client-name="${OWN_CLIENT_PREFIX}mic" \
     --device="$mic" --rate=16000 --channels=1 --format=s16le \
     --file-format=wav "$dir/mic.wav" >/dev/null 2>&1 &
   echo $! > "$dir/mic.pid"
-  setsid parecord --client-name="${OWN_CLIENT_PREFIX}system" \
+  setsid "${inhibit_prefix[@]}" parecord --client-name="${OWN_CLIENT_PREFIX}system" \
     --device="$monitor" --rate=16000 --channels=1 --format=s16le \
     --file-format=wav "$dir/system.wav" >/dev/null 2>&1 &
   echo $! > "$dir/system.pid"
@@ -187,6 +210,10 @@ cmd_toggle() {
   else
     cmd_start
   fi
+}
+
+cmd_cleanup() {
+  "$PYTHON" "$REPO_DIR/pipeline/cleanup.py"
 }
 
 # Print two lines for PipeWire source-output $1: its application.name, then
@@ -263,10 +290,11 @@ cmd_watch() {
 }
 
 case "${1:-}" in
-  start)  shift; cmd_start "$@" ;;
-  stop)   cmd_stop ;;
-  toggle) cmd_toggle ;;
-  status) cmd_status ;;
-  watch)  cmd_watch ;;
-  *) echo "Usage: meeting start [name] | stop | toggle | status | watch" >&2; exit 1 ;;
+  start)   shift; cmd_start "$@" ;;
+  stop)    cmd_stop ;;
+  toggle)  cmd_toggle ;;
+  status)  cmd_status ;;
+  watch)   cmd_watch ;;
+  cleanup) cmd_cleanup ;;
+  *) echo "Usage: meeting start [name] | stop | toggle | status | watch | cleanup" >&2; exit 1 ;;
 esac

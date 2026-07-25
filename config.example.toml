@@ -17,7 +17,32 @@ archive_root = "~/Recordings/meetings/archive"
 # "small" is a good CPU-only default; measure before going bigger.
 model = "small"
 
+[audio]
+# Override automatic microphone selection (normally `pactl get-default-source`
+# at record time -- see LESSONS.md for why that's the right default to keep).
+# List available sources with: pactl list short sources
+#mic_source = "alsa_input.pci-0000_00_1f.3.analog-stereo"
+
+[retention]
+# Delete mic.wav / system.wav once transcription is done instead of archiving
+# them. The archive keeps only transcript.md / meeting.md / meeting.json.
+delete_audio_after = false
+# Auto-delete transcript.md (never meeting.md, never audio) from archived
+# meetings older than this many days. Applied by `meeting cleanup`, which you
+# run manually or from cron; 0 disables it.
+transcript_days = 0
+
+[hooks]
+# Command run (best-effort, via a shell) after a meeting is archived. A
+# failing or slow hook is logged and ignored -- it never undoes the archive.
+# Available env vars: MEETING_ARCHIVE_DIR, MEETING_NAME, MEETING_NOTES_PATH,
+# MEETING_TRANSCRIPT_PATH.
+#on_archive_change = "rsync -a \"$MEETING_ARCHIVE_DIR/\" backup-host:/meetings/"
+
 [summary]
 # One sentence of context injected into the notes prompt, e.g. who you are.
 # Example: "You are the meeting-notes assistant of Jane Doe (Acme Corp, structural engineer)."
 context = "You are a meeting-notes assistant."
+# Force notes into a specific language instead of following the transcript's
+# dominant language (the default when this is unset).
+#language = "Catalan"
