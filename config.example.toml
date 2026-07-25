@@ -16,6 +16,15 @@ archive_root = "~/Recordings/meetings/archive"
 # faster-whisper model size: tiny, base, small, medium, large-v3.
 # "small" is a good CPU-only default; measure before going bigger.
 model = "small"
+# Domain terms, acronyms and proper nouns Whisper tends to mangle, passed as
+# its initial_prompt to bias decoding towards the right spelling. A soft hint,
+# not a find-and-replace: Whisper only reads about 224 tokens of it, so keep it
+# to the terms that actually recur in your meetings. List or plain string.
+#vocabulary = ["IFC", "IDS", "openBIM", "buildingSMART"]
+# Filler words and phrases stripped from the transcript before it is written
+# and summarized. Case-insensitive, whole words only; multi-word phrases are
+# fine. A segment left empty after stripping is dropped. Unset = no filtering.
+#filler_words = ["um", "uh", "you know", "I mean"]
 
 [audio]
 # Override automatic microphone selection (normally `pactl get-default-source`

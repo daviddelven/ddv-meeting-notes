@@ -31,14 +31,24 @@ def load() -> dict:
     paths = raw.get("paths", {})
     mirror = paths.get("mirror_root")
     audio = raw.get("audio", {})
+    transcription = raw.get("transcription", {})
     retention = raw.get("retention", {})
     summary = raw.get("summary", {})
     hooks = raw.get("hooks", {})
+
+    # Accept either a list of terms or one ready-made string, so a long
+    # vocabulary stays readable in TOML without forcing a particular style.
+    vocabulary = transcription.get("vocabulary") or None
+    if isinstance(vocabulary, list):
+        vocabulary = ", ".join(str(v).strip() for v in vocabulary if str(v).strip()) or None
+
     return {
         "spool_root": _expand(paths.get("spool_root", "~/Recordings/meetings/spool")),
         "archive_root": _expand(paths.get("archive_root", "~/Recordings/meetings/archive")),
         "mirror_root": _expand(mirror) if mirror else None,
-        "model": raw.get("transcription", {}).get("model", "small"),
+        "model": transcription.get("model", "small"),
+        "vocabulary": vocabulary,
+        "filler_words": [str(w).strip() for w in transcription.get("filler_words", []) if str(w).strip()],
         "summary_context": summary.get("context", "You are a meeting-notes assistant."),
         "summary_language": summary.get("language") or None,
         "mic_source": audio.get("mic_source") or None,

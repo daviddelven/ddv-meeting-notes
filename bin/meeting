@@ -14,6 +14,12 @@
 #                          (never auto-starts recording)
 #   meeting cleanup        delete transcript.md from archived meetings past
 #                          [retention] transcript_days (0 = disabled)
+#   meeting rename <id> <new-name>
+#                          rename a recorded meeting (directory, metadata,
+#                          transcript header and mirror)
+#   meeting regenerate <id>
+#                          re-run only the notes step against the existing
+#                          transcript, without transcribing again
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
@@ -216,6 +222,22 @@ cmd_cleanup() {
   "$PYTHON" "$REPO_DIR/pipeline/cleanup.py"
 }
 
+cmd_rename() {
+  if [[ $# -ne 2 ]]; then
+    echo "Usage: meeting rename <id> <new-name>" >&2
+    exit 1
+  fi
+  "$PYTHON" "$REPO_DIR/pipeline/manage.py" rename "$1" "$2"
+}
+
+cmd_regenerate() {
+  if [[ $# -ne 1 ]]; then
+    echo "Usage: meeting regenerate <id>" >&2
+    exit 1
+  fi
+  "$PYTHON" "$REPO_DIR/pipeline/manage.py" regenerate "$1"
+}
+
 # Print two lines for PipeWire source-output $1: its application.name, then
 # its application.process.binary. Both empty if the index is gone by the time
 # we look (the stream was too short-lived to matter) or pactl/python fails.
@@ -296,5 +318,7 @@ case "${1:-}" in
   status)  cmd_status ;;
   watch)   cmd_watch ;;
   cleanup) cmd_cleanup ;;
-  *) echo "Usage: meeting start [name] | stop | toggle | status | watch | cleanup" >&2; exit 1 ;;
+  rename)     shift; cmd_rename "$@" ;;
+  regenerate) shift; cmd_regenerate "$@" ;;
+  *) echo "Usage: meeting start [name] | stop | toggle | status | watch | cleanup | rename <id> <new-name> | regenerate <id>" >&2; exit 1 ;;
 esac

@@ -22,7 +22,7 @@ archive/2026/07/25/1030-roadmap-planning-a1b2c3d4/
 
 Set `[retention] delete_audio_after = true` to drop `mic.wav`/`system.wav` once transcription is done instead of archiving them — the archive then keeps only the three text files. `meeting cleanup` additionally deletes `transcript.md` (never `meeting.md`, never audio) from archived meetings older than `[retention] transcript_days` (0 = disabled); run it by hand or from cron.
 
-If transcription or note-generation fails (auth expired, network blip, rate limit, whatever), the recording is left exactly as-is in the spool directory — nothing is deleted, nothing is archived — and you get a desktop notification plus the exact command to re-run processing by hand once the underlying problem is fixed: `python3 pipeline/process.py <spool-dir>`.
+If transcription or note-generation fails (auth expired, network blip, rate limit, whatever), the recording is left exactly as-is in the spool directory — nothing is deleted, nothing is archived — and you get a desktop notification plus the exact command to re-run processing by hand once the underlying problem is fixed: `python3 pipeline/process.py <spool-dir>`. If the transcript had already been written when it failed, `meeting regenerate <id>` finishes the job without transcribing again (see Working with a recorded meeting below).
 
 An optional mirror copies the three text files (never audio) to a second folder, e.g. a cloud-synced drive. A `[hooks] on_archive_change` command, if set, runs (best-effort, never blocking the archive) after each meeting is archived — see `config.example.toml` for the environment variables it receives.
 
@@ -63,6 +63,19 @@ meeting start client-roadmap   # before joining the call
 meeting status
 meeting stop                   # after hanging up; transcribes, summarizes, archives
 ```
+
+Two optional transcription settings are worth knowing about: `[transcription] vocabulary` feeds your recurring domain terms, acronyms and proper nouns to Whisper as a decoding hint (`initial_prompt`), so they come out spelled the way you write them; `[transcription] filler_words` strips a configured list of fillers ("um", "you know", …) from every segment before the transcript is written and summarized, dropping segments that contained nothing else.
+
+## Working with a recorded meeting
+
+Both commands take the short id at the end of a meeting's directory name (`archive/2026/07/25/1030-roadmap-planning-a1b2c3d4` → `a1b2c3d4`); the full directory name works too. The archive and the spool are both searched.
+
+```bash
+meeting rename a1b2c3d4 client-roadmap   # directory, meeting.json, transcript header, mirror
+meeting regenerate a1b2c3d4              # re-run only the notes step
+```
+
+`meeting regenerate` re-runs `claude -p` against the existing `transcript.md` and overwrites `meeting.md`, without transcribing anything again. Use it after editing `[summary] context` or `[summary] language`, or to recover a recording whose notes step failed: if the meeting is still in the spool it is archived (and mirrored, and the archive hook fired) exactly as a normal run would have done.
 
 Verify your setup once: record a short test while audio plays, then check both WAVs actually contain sound (`ffmpeg -i mic.wav -af astats -f null -` and look at `RMS level dB`; a silent track shows `-inf`). See LESSONS.md for why you should not trust file sizes.
 
