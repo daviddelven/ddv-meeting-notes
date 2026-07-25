@@ -34,3 +34,23 @@ Whisper resamples everything to 16 kHz mono internally. `parecord --rate=16000 -
 ## Conferencing echo suppression gives you free speaker attribution
 
 Meeting apps never play your own voice back to you, so the microphone track contains only you and the sink-monitor track contains only the far side. Transcribing the two tracks separately and merging by timestamp yields a two-speaker labeled transcript with no diarization at all. (If you talk near two joined devices at once, the same sentence legitimately appears on both tracks: that is the meeting's real audio, not a bug.)
+
+## `pactl` output is locale-dependent: force `LC_ALL=C` before parsing it
+
+`pactl subscribe` and `pactl list` translate their output into the user's configured locale (`Event 'new' on source-output #807` becomes `Esdeveniment 'nou' en source-output #807` under a Catalan locale, for example). Any script that greps or pattern-matches `pactl` text output will silently stop matching on a differently-configured machine. Fix: prefix the invocation with `LC_ALL=C` (`LC_ALL=C pactl subscribe`, `LC_ALL=C pactl -f json list source-outputs`) to force English output regardless of the user's locale. `pactl -f json ...` sidesteps the problem entirely for structured queries, but `subscribe` has no JSON mode, so its event lines still need the `LC_ALL=C` treatment.
+
+## `setsid cmd &` forks and returns immediately: `$!` is not the detached process's PID
+
+By default `setsid(1)` calls `fork()` and the wrapper process exits as soon as the child is spawned, unless invoked with `-w`/`--wait`. So `setsid long_running_cmd & pid=$!; sleep 2; kill -0 "$pid"` reports the process as dead almost immediately, even though the actual detached command is alive and well in its new session under a different PID. This is by design (it is what lets the parent shell's job control show the job as "Done" right away while the payload keeps running detached), but it means `$!` right after `setsid cmd &` is useless for tracking or killing the real process; use `pgrep -f` against the command, or don't detach through `setsid` at all if you need to hold a live PID.
+
+## PipeWire capture-stream properties tell you which app just grabbed the microphone
+
+`pactl -f json list source-outputs` exposes, per active capture stream, `properties["application.name"]` and `properties["application.process.binary"]` — e.g. a browser tab requesting `getUserMedia` audio shows up with `application.name` like "Google Chrome". Combined with `pactl subscribe` reporting `Event 'new' on source-output #N` the instant such a stream appears, this is a reliable, local, zero-network signal that some application just started listening to the microphone — a good proxy for "a call just started" without hooking into any specific conferencing app's API.
+
+## A `pactl subscribe | while read` loop can't be cleanly killed; process substitution can
+
+Piping a long-running producer into `while read; do ...; done` runs the loop body in a subshell (bash forks one to service the pipe), so a `trap ... EXIT` set in the enclosing function is invisible to it, and killing the function's own PID leaves the piped producer (and the subshelled loop) as orphaned background processes. Using process substitution instead — `exec {fd}< <(producer); pid=$!; trap 'kill "$pid"' EXIT INT TERM; while read -r line <&"$fd"; do ...; done` — keeps the loop in the *same* shell (so accumulated state like a cooldown timestamp survives across iterations) and gives a real PID to `$!` immediately after starting the substitution, which the trap can then reliably kill on any exit path. (Under `systemd --user`, `systemctl stop` kills the whole service cgroup regardless, so this only matters for processes started and killed manually.)
+
+## A Calendar `events.list` window just needs to contain "now" to catch what's live right now
+
+The Google Calendar API's `timeMin`/`timeMax` filter matches events by overlap with the query window (`event.end > timeMin AND event.start < timeMax`), not by requiring the event's start to fall inside the window. So to find whatever event is happening at this exact moment, the window's exact width barely matters — any window that contains the current instant (even ±1 minute) will surface an in-progress event of any duration, because an event containing "now" trivially satisfies both bounds. A wider window (e.g. ±30 minutes) is only useful defensively, against clock skew between client and server.

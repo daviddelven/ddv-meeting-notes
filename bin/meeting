@@ -5,13 +5,22 @@
 #
 # Usage:
 #   meeting start [name]   start recording (detached; survives closing the terminal)
+#                          name defaults to the title of whatever Google Calendar
+#                          event is live right now (via gws), else "meeting"
 #   meeting stop           stop recording and run transcription + notes + archive
+#   meeting toggle         start if idle, stop if recording (for a keybinding)
 #   meeting status         show whether a recording is in progress
+#   meeting watch          foreground: notify when a likely meeting starts
+#                          (never auto-starts recording)
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 PYTHON="$REPO_DIR/.venv/bin/python"
 SPOOL_ROOT="$("$PYTHON" "$REPO_DIR/pipeline/config.py" spool_root)"
+
+# Client name our own recorders register under with PipeWire. `meeting watch`
+# uses this to recognize and ignore its own capture streams.
+OWN_CLIENT_PREFIX="ddv-meeting-notes-"
 
 notify() {
   command -v notify-send >/dev/null 2>&1 && notify-send "Meeting notes" "$1" || true
@@ -41,14 +50,54 @@ active_spool() {
   return 1
 }
 
+# Title of whatever Google Calendar event is live right now on the primary
+# calendar (via the `gws` CLI), or empty if there is none / gws is unavailable /
+# the lookup fails for any reason. Never blocks `meeting start`: every failure
+# mode here falls through to silence, and the caller falls back to "meeting".
+current_calendar_event_title() {
+  command -v gws >/dev/null 2>&1 || return 0
+  local now min max
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  min="$(date -u -d '-30 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  max="$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  timeout 5 gws calendar events list --params \
+    "{\"calendarId\":\"primary\",\"timeMin\":\"$min\",\"timeMax\":\"$max\",\"singleEvents\":true,\"orderBy\":\"startTime\"}" \
+    2>/dev/null | "$PYTHON" -c '
+import datetime, json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+now = datetime.datetime.now(datetime.timezone.utc)
+for item in data.get("items", []):
+    start = item.get("start", {}).get("dateTime")  # skip all-day events (date only)
+    end = item.get("end", {}).get("dateTime")
+    if not start or not end:
+        continue
+    try:
+        live = datetime.datetime.fromisoformat(start) <= now <= datetime.datetime.fromisoformat(end)
+    except ValueError:
+        continue
+    if live:
+        print(item.get("summary", "").strip())
+        break
+' || true
+}
+
 cmd_start() {
   if active_spool >/dev/null; then
     echo "A recording is already in progress: $(active_spool)" >&2
     exit 1
   fi
 
-  local name="${1:-meeting}"
-  name="$(echo "$name" | tr ' /' '--' | tr -cd '[:alnum:]-_')"
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    name="$(current_calendar_event_title)"
+  fi
+  [[ -z "$name" ]] && name="meeting"
+  # Cap length so a verbose calendar event title doesn't produce an unwieldy
+  # directory name; sanitization matches the pre-existing rule for manual names.
+  name="$(echo "$name" | tr ' /' '--' | tr -cd '[:alnum:]-_' | cut -c1-60)"
   # plain printf: a urandom|head pipe here would die of SIGPIPE under `set -o pipefail`
   local id
   id="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
@@ -78,10 +127,13 @@ with open(f"{d}/meeting.json", "w") as f:
 EOF
 
   # 16 kHz mono s16le: what Whisper wants, and 12x smaller than stereo 48k s32.
-  setsid parecord --device="$mic" --rate=16000 --channels=1 --format=s16le \
+  # --client-name lets `meeting watch` recognize and ignore its own streams.
+  setsid parecord --client-name="${OWN_CLIENT_PREFIX}mic" \
+    --device="$mic" --rate=16000 --channels=1 --format=s16le \
     --file-format=wav "$dir/mic.wav" >/dev/null 2>&1 &
   echo $! > "$dir/mic.pid"
-  setsid parecord --device="$monitor" --rate=16000 --channels=1 --format=s16le \
+  setsid parecord --client-name="${OWN_CLIENT_PREFIX}system" \
+    --device="$monitor" --rate=16000 --channels=1 --format=s16le \
     --file-format=wav "$dir/system.wav" >/dev/null 2>&1 &
   echo $! > "$dir/system.pid"
 
@@ -129,9 +181,92 @@ cmd_status() {
   fi
 }
 
+cmd_toggle() {
+  if active_spool >/dev/null; then
+    cmd_stop
+  else
+    cmd_start
+  fi
+}
+
+# Print two lines for PipeWire source-output $1: its application.name, then
+# its application.process.binary. Both empty if the index is gone by the time
+# we look (the stream was too short-lived to matter) or pactl/python fails.
+source_output_info() {
+  local idx="$1"
+  LC_ALL=C pactl -f json list source-outputs 2>/dev/null | "$PYTHON" -c '
+import json, sys
+idx = sys.argv[1]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print(); print()
+    sys.exit(0)
+for item in data:
+    if str(item.get("index")) == idx:
+        p = item.get("properties", {})
+        print(p.get("application.name", ""))
+        print(p.get("application.process.binary", ""))
+        break
+else:
+    print(); print()
+' "$idx" || printf '\n\n'
+}
+
+# Regex (case-insensitive) matched against application.name / .process.binary
+# of newly-created capture streams. A browser or the Teams --app window
+# grabbing the microphone is the strongest local signal a call just started.
+MEETING_APP_PATTERN='(chrome|chromium|firefox|teams)'
+
+cmd_watch() {
+  echo "Watching for meeting-start signals (Ctrl+C to stop)..."
+  local last_notify=0
+
+  # Process substitution (not a pipe) so the while loop below runs in THIS
+  # shell, not a subshell: `$!` right after gives pactl's real PID, and the
+  # trap can reliably kill it. A plain `pactl subscribe | while ...` would
+  # both fork the loop into an unreachable subshell and leave pactl orphaned
+  # if this function is ever killed by PID instead of Ctrl+C / a full
+  # process-group signal (systemd stop kills the whole cgroup either way,
+  # but a bare `kill` on a manually-run watcher would not).
+  exec {sub_fd}< <(LC_ALL=C pactl subscribe 2>/dev/null)
+  local subscribe_pid=$!
+  trap '[[ -n "${subscribe_pid:-}" ]] && kill "$subscribe_pid" 2>/dev/null' EXIT INT TERM
+
+  while IFS= read -r line <&"$sub_fd"; do
+    [[ "$line" == "Event 'new' on source-output "* ]] || continue
+    # Already recording: no point suggesting it.
+    active_spool >/dev/null && continue
+
+    local idx="${line##*#}"
+    local info app_name app_binary
+    info="$(source_output_info "$idx")"
+    app_name="$(sed -n '1p' <<<"$info")"
+    app_binary="$(sed -n '2p' <<<"$info")"
+
+    # Ignore our own recorder streams (see --client-name in cmd_start).
+    [[ "$app_name" == "${OWN_CLIENT_PREFIX}"* ]] && continue
+
+    local is_meeting_app=0
+    shopt -s nocasematch
+    [[ "$app_name" =~ $MEETING_APP_PATTERN || "$app_binary" =~ $MEETING_APP_PATTERN ]] && is_meeting_app=1
+    shopt -u nocasematch
+    [[ "$is_meeting_app" == 1 ]] || continue
+
+    local now_ts
+    now_ts="$(date +%s)"
+    # Cooldown: a single call can spin up several audio streams in a row.
+    (( now_ts - last_notify < 60 )) && continue
+    last_notify=$now_ts
+    notify "${app_name:-$app_binary} just started using the microphone. Looks like a meeting -- run: meeting start"
+  done
+}
+
 case "${1:-}" in
   start)  shift; cmd_start "$@" ;;
   stop)   cmd_stop ;;
+  toggle) cmd_toggle ;;
   status) cmd_status ;;
-  *) echo "Usage: meeting start [name] | stop | status" >&2; exit 1 ;;
+  watch)  cmd_watch ;;
+  *) echo "Usage: meeting start [name] | stop | toggle | status | watch" >&2; exit 1 ;;
 esac

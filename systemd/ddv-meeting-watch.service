@@ -1,0 +1,14 @@
+[Unit]
+Description=ddv-meeting-notes: notify when a likely meeting starts
+# Needs the desktop session for pactl (PipeWire) and notify-send (D-Bus).
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/meeting watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
