@@ -24,7 +24,7 @@ Set `[retention] delete_audio_after = true` to drop `mic.wav`/`system.wav` once 
 
 If transcription or note-generation fails (auth expired, network blip, rate limit, whatever), the recording is left exactly as-is in the spool directory — nothing is deleted, nothing is archived — and you get a desktop notification plus the exact command to re-run processing by hand once the underlying problem is fixed: `python3 pipeline/process.py <spool-dir>`. If the transcript had already been written when it failed, `meeting regenerate <id>` finishes the job without transcribing again (see Working with a recorded meeting below).
 
-An optional mirror copies the three text files (never audio) to a second folder, e.g. a cloud-synced drive. A `[hooks] on_archive_change` command, if set, runs (best-effort, never blocking the archive) after each meeting is archived — see `config.example.toml` for the environment variables it receives.
+An optional mirror copies the three text files (never audio) to a second folder, e.g. a cloud-synced drive. A `[hooks] on_archive_change` command, if set, runs (best-effort, never blocking the archive) after each meeting is archived — see `config.example.toml` for the environment variables it receives, and Pushing notes into a notes app below for a ready-made one.
 
 The spool-then-archive lifecycle and the data model are borrowed from Andre Foeken's meeting-notes (see Credits).
 
@@ -118,6 +118,23 @@ systemctl --user enable --now ddv-meeting-watch.service
 `systemctl --user status ddv-meeting-watch.service` to check it, `systemctl --user stop ddv-meeting-watch.service` to stop it (this also stops its `pactl subscribe` child — systemd kills the whole service cgroup).
 
 `meeting watch`'s pattern currently recognizes Chrome/Chromium, Firefox and Teams; broadening it to other conferencing apps needs their real PipeWire `application.name`/`application.process.binary` values captured during an actual call (see LESSONS.md), not assumed strings.
+
+## Pushing notes into a notes app (Tana)
+
+`contrib/tana-push.sh` is an optional, self-contained hook script that files each archived meeting's notes into [Tana](https://tana.inc) under today's calendar node, as one node per meeting with a child bullet per notes section.
+
+A shell hook cannot call an MCP tool, so it does not try to: it hands the job to headless `claude -p` — the same CLI the notes step already requires — restricted with `--allowedTools` to exactly the three `tana-local` tools it needs. There is no API token and nothing leaves localhost; the writes go through the tana-local MCP server, which lives inside the Tana Outliner desktop app.
+
+```toml
+[hooks]
+on_archive_change = "TANA_WORKSPACE_ID=abc123 /path/to/ddv-meeting-notes/contrib/tana-push.sh"
+```
+
+Set `TANA_WORKSPACE_ID` to the id of the workspace you want (the workspace id, not its home node's id — list them with tana-local's `list_workspaces`): with several workspaces loaded the push refuses to guess and changes nothing. `TANA_SUPERTAG` optionally tags the meeting node; `TANA_LOCAL_URL` overrides the default `http://127.0.0.1:8262/mcp`. Fields are deliberately never set — guessing a value for an option field is worse than leaving it empty for you to fill in Tana.
+
+Caveats worth knowing before you wire it up. Tana Outliner must be running when the meeting is archived, since the MCP server is part of that process; when it isn't, the script says so and exits 0 rather than failing the archive, and that meeting is simply not pushed. The conversion from Markdown to Tana Paste is done by a model, so it is not bit-for-bit deterministic — the prompt forbids summarizing, translating or inventing, but the notes in Tana are a copy, and `meeting.md` on disk stays the source of truth.
+
+The same shape works for any other MCP-reachable destination: copy the script, swap the tool names in `--allowedTools` and the instructions in the prompt.
 
 ## Retention and cleanup
 

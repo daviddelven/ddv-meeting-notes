@@ -47,6 +47,10 @@ transcript_days = 0
 # Available env vars: MEETING_ARCHIVE_DIR, MEETING_NAME, MEETING_NOTES_PATH,
 # MEETING_TRANSCRIPT_PATH.
 #on_archive_change = "rsync -a \"$MEETING_ARCHIVE_DIR/\" backup-host:/meetings/"
+# Ready-made hook: push each meeting's notes into Tana under today's calendar
+# node. See contrib/tana-push.sh for what it needs (Tana Outliner running, the
+# tana-local MCP server configured) and README for the caveats.
+#on_archive_change = "TANA_WORKSPACE_ID=abc123 /path/to/ddv-meeting-notes/contrib/tana-push.sh"
 
 [summary]
 # One sentence of context injected into the notes prompt, e.g. who you are.
