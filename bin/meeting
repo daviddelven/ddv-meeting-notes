@@ -20,6 +20,9 @@
 #   meeting regenerate <id>
 #                          re-run only the notes step against the existing
 #                          transcript, without transcribing again
+#   meeting chat <id> [claude args...]
+#                          interactive `claude` session about one finished
+#                          meeting, pinned to its directory
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
@@ -238,6 +241,54 @@ cmd_regenerate() {
   "$PYTHON" "$REPO_DIR/pipeline/manage.py" regenerate "$1"
 }
 
+# Ask questions about a meeting that is already over: an ordinary interactive
+# `claude` session whose working directory IS the meeting's directory, so its
+# transcript and notes are the files at hand. Anything after the id is passed
+# through to claude (e.g. `-c` to resume the previous chat about this meeting).
+cmd_chat() {
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: meeting chat <id> [claude args...]" >&2
+    exit 1
+  fi
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "The 'claude' CLI is not on PATH -- meeting chat needs it." >&2
+    exit 1
+  fi
+
+  local id="$1"; shift
+  local dir
+  dir="$("$PYTHON" "$REPO_DIR/pipeline/manage.py" resolve "$id")"
+
+  # transcript.md can legitimately be gone (deleted by `meeting cleanup`), and
+  # meeting.md can be missing on a spool directory whose notes step failed.
+  # With neither there is nothing to talk about.
+  if [[ ! -f "$dir/transcript.md" && ! -f "$dir/meeting.md" ]]; then
+    echo "Nothing to chat about in $dir: no transcript.md and no meeting.md." >&2
+    echo "Generate the notes first with: meeting regenerate $id" >&2
+    exit 1
+  fi
+
+  local context
+  context="$("$PYTHON" "$REPO_DIR/pipeline/config.py" summary_context)"
+
+  echo "Chatting about: $dir"
+  cd "$dir"
+  # exec: this wrapper has nothing left to do, and claude gets the terminal
+  # directly (no extra process between it and the user's keyboard).
+  exec claude --append-system-prompt "$context The working directory is the \
+archive of ONE meeting that has already finished. Its files: transcript.md is \
+the verbatim transcript with two speakers, \"Me\" (the user, recorded from the \
+microphone) and \"Others\" (the remote participants, recorded from the system \
+audio output); meeting.md holds the structured notes generated from that \
+transcript; meeting.json holds the metadata (name, start time, duration). \
+Speaker labels and content may be in any language. Read the files before \
+answering the first question about the meeting, and answer only from what they \
+contain: never invent anything that is not in the transcript, and say so plainly \
+when the transcript does not settle the question. The recording is over, so \
+there is nothing live to observe. Do not modify or delete these files unless \
+explicitly asked to." "$@"
+}
+
 # Print two lines for PipeWire source-output $1: its application.name, then
 # its application.process.binary. Both empty if the index is gone by the time
 # we look (the stream was too short-lived to matter) or pactl/python fails.
@@ -320,5 +371,6 @@ case "${1:-}" in
   cleanup) cmd_cleanup ;;
   rename)     shift; cmd_rename "$@" ;;
   regenerate) shift; cmd_regenerate "$@" ;;
-  *) echo "Usage: meeting start [name] | stop | toggle | status | watch | cleanup | rename <id> <new-name> | regenerate <id>" >&2; exit 1 ;;
+  chat)       shift; cmd_chat "$@" ;;
+  *) echo "Usage: meeting start [name] | stop | toggle | status | watch | cleanup | rename <id> <new-name> | regenerate <id> | chat <id>" >&2; exit 1 ;;
 esac

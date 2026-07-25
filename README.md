@@ -68,14 +68,17 @@ Two optional transcription settings are worth knowing about: `[transcription] vo
 
 ## Working with a recorded meeting
 
-Both commands take the short id at the end of a meeting's directory name (`archive/2026/07/25/1030-roadmap-planning-a1b2c3d4` → `a1b2c3d4`); the full directory name works too. The archive and the spool are both searched.
+All three commands take the short id at the end of a meeting's directory name (`archive/2026/07/25/1030-roadmap-planning-a1b2c3d4` → `a1b2c3d4`); the full directory name works too. The archive and the spool are both searched.
 
 ```bash
 meeting rename a1b2c3d4 client-roadmap   # directory, meeting.json, transcript header, mirror
 meeting regenerate a1b2c3d4              # re-run only the notes step
+meeting chat a1b2c3d4                    # ask questions about that meeting
 ```
 
 `meeting regenerate` re-runs `claude -p` against the existing `transcript.md` and overwrites `meeting.md`, without transcribing anything again. Use it after editing `[summary] context` or `[summary] language`, or to recover a recording whose notes step failed: if the meeting is still in the spool it is archived (and mirrored, and the archive hook fired) exactly as a normal run would have done.
+
+`meeting chat` opens an ordinary interactive `claude` session whose working directory *is* that meeting's directory, so `transcript.md`, `meeting.md` and `meeting.json` are simply the files at hand: ask what was decided, who owes what, or have it draft the follow-up email. Your `[summary] context` is reused to tell it who you are, and it is told to answer only from the transcript. Anything you put after the id is passed through to `claude` — `meeting chat a1b2c3d4 -c` resumes your previous conversation about that same meeting. This is strictly post-hoc: there is no live transcript during a call, by design (see LESSONS.md).
 
 Verify your setup once: record a short test while audio plays, then check both WAVs actually contain sound (`ffmpeg -i mic.wav -af astats -f null -` and look at `RMS level dB`; a silent track shows `-inf`). See LESSONS.md for why you should not trust file sizes.
 

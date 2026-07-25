@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""`meeting rename` and `meeting regenerate`: act on one already-recorded meeting.
+"""`meeting rename`, `regenerate` and `resolve`: act on one already-recorded meeting.
 
 A meeting is addressed by the short id at the end of its directory name
 (archive/2026/07/25/1030-roadmap-a1b2c3d4 -> "a1b2c3d4"); the full directory
@@ -168,6 +168,11 @@ def cmd_regenerate(cfg: dict, meeting_id: str) -> None:
     process.archive_meeting(d, meta, cfg)
 
 
+def cmd_resolve(cfg: dict, meeting_id: str) -> None:
+    """Print the directory of one meeting, for shell callers (`meeting chat`)."""
+    print(find_meeting(cfg, meeting_id))
+
+
 def main() -> None:
     cfg = config.load()
     args = sys.argv[1:]
@@ -175,8 +180,13 @@ def main() -> None:
         cmd_rename(cfg, args[1], args[2])
     elif len(args) == 2 and args[0] == "regenerate":
         cmd_regenerate(cfg, args[1])
+    elif len(args) == 2 and args[0] == "resolve":
+        cmd_resolve(cfg, args[1])
     else:
-        die("Usage: manage.py rename <id> <new-name> | manage.py regenerate <id>")
+        die(
+            "Usage: manage.py rename <id> <new-name> | manage.py regenerate <id> "
+            "| manage.py resolve <id>"
+        )
 
 
 if __name__ == "__main__":
