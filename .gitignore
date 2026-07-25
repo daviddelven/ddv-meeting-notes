@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Never commit meeting data or personal configuration: this repo is built
+# as a public project. Recordings, transcripts and notes stay out of git.
+*.wav
+*.mp3
+*.ogg
+spool/
+archive/
+transcript.md
+meeting.md
+meeting.json
+config.toml
+.env

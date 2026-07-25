@@ -1,0 +1,23 @@
+# ddv-meeting-notes configuration.
+# Copy to ${XDG_CONFIG_HOME:-~/.config}/ddv-meeting-notes/config.toml and edit.
+# Every key is optional; the defaults shown here are what you get with no config file.
+# Keep your real config OUT of the repository: it may contain personal or client details.
+
+[paths]
+# Where in-progress recordings live.
+spool_root = "~/Recordings/meetings/spool"
+# Where processed meetings are archived (audio + transcript + notes).
+archive_root = "~/Recordings/meetings/archive"
+# Optional extra copy of meeting.md / transcript.md / meeting.json only
+# (e.g. a cloud-synced folder). Audio is never mirrored. Unset = no mirror.
+#mirror_root = "~/CloudDrive/MeetingNotes"
+
+[transcription]
+# faster-whisper model size: tiny, base, small, medium, large-v3.
+# "small" is a good CPU-only default; measure before going bigger.
+model = "small"
+
+[summary]
+# One sentence of context injected into the notes prompt, e.g. who you are.
+# Example: "You are the meeting-notes assistant of Jane Doe (Acme Corp, structural engineer)."
+context = "You are a meeting-notes assistant."

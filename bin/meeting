@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Meeting audio capture for Linux (PipeWire): records the microphone and the
+# system output as TWO separate tracks (merging, if ever needed, is a
+# processing step, never a capture-time decision).
+#
+# Usage:
+#   meeting start [name]   start recording (detached; survives closing the terminal)
+#   meeting stop           stop recording and run transcription + notes + archive
+#   meeting status         show whether a recording is in progress
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+PYTHON="$REPO_DIR/.venv/bin/python"
+SPOOL_ROOT="$("$PYTHON" "$REPO_DIR/pipeline/config.py" spool_root)"
+
+notify() {
+  command -v notify-send >/dev/null 2>&1 && notify-send "Meeting notes" "$1" || true
+}
+
+# Is this PID one of our recorders? Require a live parecord writing INSIDE this
+# spool dir (avoids false positives from PID recycling after a reboot or crash).
+pid_is_recorder() {
+  local pidfile="$1" dir="$2" pid cl
+  [[ -f "$pidfile" ]] || return 1
+  pid="$(cat "$pidfile")"
+  cl="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" || return 1
+  [[ "$cl" == *parecord* && "$cl" == *"$dir"* ]]
+}
+
+active_spool() {
+  # A spool is active if EITHER track's recorder is alive (checking only one
+  # would leave the other orphaned forever if it outlives its sibling).
+  local dir
+  for dir in "$SPOOL_ROOT"/*/; do
+    dir="${dir%/}"
+    if pid_is_recorder "$dir/mic.pid" "$dir" || pid_is_recorder "$dir/system.pid" "$dir"; then
+      echo "$dir"
+      return 0
+    fi
+  done
+  return 1
+}
+
+cmd_start() {
+  if active_spool >/dev/null; then
+    echo "A recording is already in progress: $(active_spool)" >&2
+    exit 1
+  fi
+
+  local name="${1:-meeting}"
+  name="$(echo "$name" | tr ' /' '--' | tr -cd '[:alnum:]-_')"
+  # plain printf: a urandom|head pipe here would die of SIGPIPE under `set -o pipefail`
+  local id
+  id="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
+  local dir="$SPOOL_ROOT/$(date +%Y%m%d-%H%M)-${name}-${id}"
+  mkdir -p "$dir"
+
+  local mic monitor
+  mic="$(pactl get-default-source)"
+  monitor="$(pactl get-default-sink).monitor"
+  if ! pactl list short sources | awk '{print $2}' | grep -qx "$monitor"; then
+    echo "Monitor source '$monitor' not found. Available sources:" >&2
+    pactl list short sources >&2
+    exit 1
+  fi
+
+  "$PYTHON" - "$dir" "$name" "$mic" "$monitor" <<'EOF'
+import json, sys, datetime
+d, name, mic, monitor = sys.argv[1:5]
+meta = {
+    "name": name,
+    "started_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+    "mic_source": mic,
+    "monitor_source": monitor,
+}
+with open(f"{d}/meeting.json", "w") as f:
+    json.dump(meta, f, indent=2)
+EOF
+
+  # 16 kHz mono s16le: what Whisper wants, and 12x smaller than stereo 48k s32.
+  setsid parecord --device="$mic" --rate=16000 --channels=1 --format=s16le \
+    --file-format=wav "$dir/mic.wav" >/dev/null 2>&1 &
+  echo $! > "$dir/mic.pid"
+  setsid parecord --device="$monitor" --rate=16000 --channels=1 --format=s16le \
+    --file-format=wav "$dir/system.wav" >/dev/null 2>&1 &
+  echo $! > "$dir/system.pid"
+
+  echo "Recording: $dir"
+  echo "  mic:     $mic"
+  echo "  monitor: $monitor"
+  echo "Stop with: meeting stop"
+  notify "Recording started: $name"
+}
+
+cmd_stop() {
+  local dir
+  if ! dir="$(active_spool)"; then
+    echo "No recording in progress." >&2
+    exit 1
+  fi
+
+  local pids=() pf
+  for pf in "$dir/mic.pid" "$dir/system.pid"; do
+    pid_is_recorder "$pf" "$dir" && pids+=("$(cat "$pf")")
+  done
+  [[ ${#pids[@]} -gt 0 ]] && kill -TERM "${pids[@]}" 2>/dev/null || true
+  # parecord finalizes the WAV header on TERM; wait until BOTH have exited
+  # before processing (reading a half-finalized WAV is a race).
+  local i p alive
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    alive=0
+    for p in "${pids[@]}"; do [[ -d "/proc/$p" ]] && alive=1; done
+    [[ $alive -eq 0 ]] && break
+    sleep 0.3
+  done
+  rm -f "$dir/mic.pid" "$dir/system.pid"
+
+  echo "Recording stopped: $dir"
+  notify "Recording stopped. Transcribing (this can take a few minutes)..."
+  "$PYTHON" "$REPO_DIR/pipeline/process.py" "$dir"
+}
+
+cmd_status() {
+  local dir
+  if dir="$(active_spool)"; then
+    echo "Recording: $dir (since $("$PYTHON" -c "import json;print(json.load(open('$dir/meeting.json'))['started_at'])"))"
+  else
+    echo "No recording in progress."
+  fi
+}
+
+case "${1:-}" in
+  start)  shift; cmd_start "$@" ;;
+  stop)   cmd_stop ;;
+  status) cmd_status ;;
+  *) echo "Usage: meeting start [name] | stop | status" >&2; exit 1 ;;
+esac
