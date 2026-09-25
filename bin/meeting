@@ -8,6 +8,7 @@
 #                          name defaults to the title of whatever Google Calendar
 #                          event is live right now (via gws), else "meeting"
 #   meeting stop           stop recording and run transcription + notes + archive
+#                          in the background (survives closing the terminal)
 #   meeting toggle         start if idle, stop if recording (for a keybinding)
 #   meeting status         show whether a recording is in progress
 #   meeting watch          foreground: notify when a likely meeting starts
@@ -201,7 +202,14 @@ cmd_stop() {
 
   echo "Recording stopped: $dir"
   notify "Recording stopped. Transcribing (this can take a few minutes)..."
-  "$PYTHON" "$REPO_DIR/pipeline/process.py" "$dir"
+  # Detached like the recorders: processing takes minutes on CPU, and running it
+  # in the foreground meant closing the pane killed it silently mid-transcription.
+  # process.py already notifies on success and on failure. The log lives in the
+  # spool dir, so it moves into the archive with the meeting.
+  setsid nohup "$PYTHON" "$REPO_DIR/pipeline/process.py" "$dir" \
+    >"$dir/process.log" 2>&1 </dev/null &
+  echo "Transcribing in the background; safe to close this terminal."
+  echo "  log: $dir/process.log (moves to the archive when done)"
 }
 
 cmd_status() {
