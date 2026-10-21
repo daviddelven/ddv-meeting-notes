@@ -48,6 +48,7 @@ def load() -> dict:
         "mirror_root": _expand(mirror) if mirror else None,
         "model": transcription.get("model", "small"),
         "vocabulary": vocabulary,
+        "language": transcription.get("language") or None,
         "filler_words": [str(w).strip() for w in transcription.get("filler_words", []) if str(w).strip()],
         "summary_context": summary.get("context", "You are a meeting-notes assistant."),
         "summary_language": summary.get("language") or None,

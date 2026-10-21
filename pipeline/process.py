@@ -50,22 +50,65 @@ def wav_duration(path: Path) -> float:
         return w.getnframes() / w.getframerate()
 
 
+# Below this autodetection confidence on a track whose language disagrees
+# with the other track's, trust the other track instead (see transcribe()).
+# It only matters on a mismatch, so it can sit high: measured on real mic
+# tracks, a garbled misfire scored 0.57 while correct detections scored
+# 0.78-0.90 (and agreed with the system track, so never reach this check).
+MIN_LANGUAGE_PROBABILITY = 0.8
+
+
 def transcribe(
-    model: "WhisperModel", path: Path, speaker: str, vocabulary: str | None = None
-) -> list[Segment]:
+    model: "WhisperModel",
+    path: Path,
+    speaker: str,
+    vocabulary: str | None = None,
+    language: str | None = None,
+    fallback_language: str | None = None,
+) -> tuple[list[Segment], str]:
+    """Transcribe one track; return its segments and the language used.
+
+    Autodetection only looks at the first 30 s of speech. On a mic track that
+    stays mostly silent (the user listening) it can lock onto a nonsense
+    language with low confidence and garble the whole track. When that
+    happens and `fallback_language` (the other track's language) is given,
+    the track is decoded again in that language. A fixed `language` skips
+    detection altogether.
+    """
+    from faster_whisper import decode_audio
+
+    # Decode once: a fallback re-run reuses the samples instead of decoding
+    # the whole WAV a second time.
+    audio = decode_audio(str(path), sampling_rate=model.feature_extractor.sampling_rate)
+
     # initial_prompt biases decoding towards the spelling of domain terms and
     # proper nouns Whisper would otherwise mangle. It is a soft hint, not a
     # substitution list, and Whisper only reads ~224 tokens of it.
+    # Segments are generated lazily, so discarding the first generator after a
+    # bad detection costs only the detection pass, not a transcription.
     raw_segments, info = model.transcribe(
-        str(path), vad_filter=True, initial_prompt=vocabulary
+        audio, vad_filter=True, initial_prompt=vocabulary, language=language
     )
+    detected = f"language={info.language} (p={info.language_probability:.2f})"
+    if (
+        language is None
+        and fallback_language
+        and info.language != fallback_language
+        and info.language_probability < MIN_LANGUAGE_PROBABILITY
+    ):
+        print(f"  {path.name}: low-confidence {detected}, using {fallback_language} instead")
+        raw_segments, info = model.transcribe(
+            audio, vad_filter=True, initial_prompt=vocabulary, language=fallback_language
+        )
+        detected = f"language={info.language} (fallback)"
+
     out = [
         Segment(s.start, s.end, speaker, s.text.strip())
         for s in raw_segments
         if s.text.strip()
     ]
-    print(f"  {path.name}: {len(out)} segments, language={info.language}")
-    return out
+    print(f"  {path.name}: {len(out)} segments, {detected}")
+    return out, info.language
 
 
 def filler_pattern(words: list[str]) -> "re.Pattern[str] | None":
@@ -237,9 +280,19 @@ def main() -> None:
 
         model = WhisperModel(cfg["model"], device="cpu", compute_type="int8")
         vocabulary = cfg["vocabulary"]
-        segments = transcribe(model, spool / "mic.wav", "Me", vocabulary) + transcribe(
-            model, spool / "system.wav", "Others", vocabulary
+        # Distinct name: `language` above is the notes language for summarize().
+        whisper_language = cfg["language"]
+        # The room track goes first: several voices talking most of the time
+        # make its detected language the reliable one, and the mic track falls
+        # back to it when its own detection is low-confidence.
+        others, others_language = transcribe(
+            model, spool / "system.wav", "Others", vocabulary, whisper_language
         )
+        mine, _ = transcribe(
+            model, spool / "mic.wav", "Me", vocabulary, whisper_language,
+            fallback_language=others_language,
+        )
+        segments = mine + others
         segments = strip_fillers(segments, cfg["filler_words"])
         transcript = build_transcript(meta, segments, duration)
         (spool / "transcript.md").write_text(transcript)

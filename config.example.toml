@@ -25,6 +25,12 @@ model = "small"
 # and summarized. Case-insensitive, whole words only; multi-word phrases are
 # fine. A segment left empty after stripping is dropped. Unset = no filtering.
 #filler_words = ["um", "uh", "you know", "I mean"]
+# Language code for both tracks (e.g. "ca", "es", "en"). Unset = autodetect
+# per track. Autodetection looks only at the first 30 s of speech, so on a mic
+# track where you barely talk it can misfire; when it does with low confidence,
+# your track falls back to the language detected on the system track.
+# Set this only if all your meetings share one language.
+#language = "ca"
 
 [audio]
 # Override automatic microphone selection (normally `pactl get-default-source`
