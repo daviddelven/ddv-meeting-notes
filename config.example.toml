@@ -20,6 +20,8 @@ model = "small"
 # its initial_prompt to bias decoding towards the right spelling. A soft hint,
 # not a find-and-replace: Whisper only reads about 224 tokens of it, so keep it
 # to the terms that actually recur in your meetings. List or plain string.
+# Decoding does not carry text from one 30 s window to the next (that loops on
+# long meetings, see LESSONS.md), so this hint only steers the first window.
 #vocabulary = ["IFC", "IDS", "openBIM", "buildingSMART"]
 # Filler words and phrases stripped from the transcript before it is written
 # and summarized. Case-insensitive, whole words only; multi-word phrases are

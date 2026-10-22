@@ -64,7 +64,7 @@ meeting status
 meeting stop                   # after hanging up; transcribes, summarizes, archives
 ```
 
-Two optional transcription settings are worth knowing about: `[transcription] vocabulary` feeds your recurring domain terms, acronyms and proper nouns to Whisper as a decoding hint (`initial_prompt`), so they come out spelled the way you write them; `[transcription] filler_words` strips a configured list of fillers ("um", "you know", …) from every segment before the transcript is written and summarized, dropping segments that contained nothing else. Each track's language is autodetected; when detection on your own (mic) track is low-confidence, it falls back to the language detected on the system track. `[transcription] language` fixes one language for both tracks if all your meetings share it.
+Two optional transcription settings are worth knowing about: `[transcription] vocabulary` feeds your recurring domain terms, acronyms and proper nouns to Whisper as a decoding hint (`initial_prompt`), so they come out spelled the way you write them (only in the first 30 s window: windows are decoded without the previous window's text, because carrying it over made long tracks loop); `[transcription] filler_words` strips a configured list of fillers ("um", "you know", …) from every segment before the transcript is written and summarized, dropping segments that contained nothing else. Each track's language is autodetected; when detection on your own (mic) track is low-confidence, it falls back to the language detected on the system track. `[transcription] language` fixes one language for both tracks if all your meetings share it.
 
 ## Working with a recorded meeting
 

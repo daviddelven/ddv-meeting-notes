@@ -86,8 +86,16 @@ def transcribe(
     # substitution list, and Whisper only reads ~224 tokens of it.
     # Segments are generated lazily, so discarding the first generator after a
     # bad detection costs only the detection pass, not a transcription.
+    # condition_on_previous_text=False: with the previous window's text as
+    # prompt, a long room track fell into a loop repeating one sentence for the
+    # last 36 minutes of a 2 h meeting. Without it each window decodes on its
+    # own; the price is that initial_prompt now steers only the first window.
     raw_segments, info = model.transcribe(
-        audio, vad_filter=True, initial_prompt=vocabulary, language=language
+        audio,
+        vad_filter=True,
+        initial_prompt=vocabulary,
+        language=language,
+        condition_on_previous_text=False,
     )
     detected = f"language={info.language} (p={info.language_probability:.2f})"
     if (
@@ -98,7 +106,11 @@ def transcribe(
     ):
         print(f"  {path.name}: low-confidence {detected}, using {fallback_language} instead")
         raw_segments, info = model.transcribe(
-            audio, vad_filter=True, initial_prompt=vocabulary, language=fallback_language
+            audio,
+            vad_filter=True,
+            initial_prompt=vocabulary,
+            language=fallback_language,
+            condition_on_previous_text=False,
         )
         detected = f"language={info.language} (fallback)"
 
